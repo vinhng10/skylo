@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type Event struct {
-	ID           string `json:"id"`
 	VehiclePlate string `json:"vehicle_plate"`
 }
 
@@ -77,9 +77,9 @@ func postEvent(c *gin.Context, ch *amqp.Channel, qName string) {
 	}
 	datetimeKey := fmt.Sprintf("%s_date_time", qName)
 	timedEvent := gin.H{
-		"id":            newEvent.ID,
-		"vehicle_plate": newEvent.ID,
-		datetimeKey:     time.Now(),
+		"id":            uuid.NewString(),
+		"vehicle_plate": newEvent.VehiclePlate,
+		datetimeKey:     time.Now().Unix(),
 	}
 
 	body, _ := json.Marshal(timedEvent)
