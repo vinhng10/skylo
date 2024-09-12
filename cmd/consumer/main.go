@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -15,6 +18,12 @@ type Event struct {
 	VehiclePlate string    `json:"vehicle_plate"`
 	Stage        string    `json:"stage"`
 	DateTime     time.Time `json:"date_time"`
+}
+
+type Invoice struct {
+	VehiclePlate  string    `json:"vehicle_plate"`
+	EntryDateTime time.Time `json:"entry_date_time"`
+	ExitDateTime  time.Time `json:"exit_date_time"`
 }
 
 func failOnError(err error, msg string) {
@@ -66,6 +75,28 @@ func declareAndConsumeQueue(ch *amqp.Channel, qName string, exName string) (<-ch
 	return msgs, nil
 }
 
+func sendInvoice(invoice Invoice) (*http.Response, error) {
+	url := "http://172.17.0.2:8000/"
+
+	body, err := json.Marshal(invoice)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal JSON body: %v", err)
+	}
+
+	resp, err := http.Post(url, "application/json; charset=utf-8", bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to POST invoice: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Check if the response status is successful (status code 2xx)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("unsuccessful response: %s", resp.Status)
+	}
+
+	return resp, nil
+}
+
 func main() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     "172.17.0.4:6379",
@@ -104,12 +135,18 @@ func main() {
 
 				var event Event
 				err := json.Unmarshal(msg.Body, &event)
-				failOnError(err, "Failed to unmarshal entry event")
+				if err != nil {
+					log.Println("Failed to unmarshal exit event")
+					return
+				}
 
-				val, err := rdb.Set(ctx, event.VehiclePlate, event.DateTime, 0).Result()
-				failOnError(err, "Failed to store event in redis")
+				_, err = rdb.Set(ctx, event.VehiclePlate, event.DateTime, 0).Result()
+				if err != nil {
+					log.Println("Failed to set event to redis", err)
+					return
+				}
 
-				log.Printf(" [x] %s", val)
+				log.Print("Entry OK")
 				msg.Ack(false)
 			}()
 		}
@@ -126,20 +163,46 @@ func main() {
 
 				var event Event
 				err := json.Unmarshal(msg.Body, &event)
-				failOnError(err, "Failed to unmarshal exit event")
-
-				val, err := rdb.GetDel(ctx, event.VehiclePlate).Result()
 				if err != nil {
-					log.Printf(" [x] Con Cac")
+					log.Println("Failed to unmarshal exit event")
+					return
 				}
 
-				log.Printf(" [x] %s", val)
+				val, err := rdb.Get(ctx, event.VehiclePlate).Result()
+				if err != nil {
+					log.Println("Failed to get event from redis", err)
+					return
+				}
+
+				entryDateTime, err := time.Parse(time.RFC3339, val)
+				if err != nil {
+					log.Println("Failed to parse time:", err)
+					return
+				}
+
+				_, err = sendInvoice(Invoice{
+					VehiclePlate:  event.VehiclePlate,
+					EntryDateTime: entryDateTime,
+					ExitDateTime:  event.DateTime,
+				})
+				if err != nil {
+					log.Println("Failed to send invoice:", err)
+					return
+				}
+
+				_, err = rdb.Del(ctx, event.VehiclePlate).Result()
+				if err != nil {
+					log.Println("Failed to remove event from redis", err)
+					return
+				}
+
+				log.Print("Exit OK")
 				msg.Ack(false)
 			}()
 		}
 	}()
 
-	log.Printf(" [*] Waiting for logs. To exit press CTRL+C")
+	log.Printf("Waiting for logs. To exit press CTRL+C")
 
 	// Keep the main function running to receive messages
 	select {}
