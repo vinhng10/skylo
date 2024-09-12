@@ -41,7 +41,12 @@ func generateRandomVehiclePlate() string {
 }
 
 func sendEvent(ch *amqp.Channel, vehiclePlate string, qName string) error {
-	newEvent := Event{ID: uuid.NewString(), VehiclePlate: vehiclePlate, Stage: qName, DateTime: time.Now().UTC()}
+	newEvent := Event{
+		ID:           uuid.NewString(),
+		VehiclePlate: vehiclePlate,
+		Stage:        qName,
+		DateTime:     time.Now().UTC(),
+	}
 
 	body, _ := json.Marshal(newEvent)
 
@@ -106,15 +111,22 @@ func generateEntry(ch *amqp.Channel, rdb *redis.Client, qName string) {
 
 func generateExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
 	for {
-		vehiclePlate, err := func() (string, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+		var vehiclePlate string
+		var err error
 
-			vehiclePlate, err := rdb.RandomKey(ctx).Result()
-			return vehiclePlate, err
-		}()
-		if err != nil {
-			continue
+		if rand.Float32() < 0.8 {
+			vehiclePlate, err = func() (string, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+
+				vehiclePlate, err := rdb.RandomKey(ctx).Result()
+				return vehiclePlate, err
+			}()
+			if err != nil {
+				continue
+			}
+		} else {
+			vehiclePlate = generateRandomVehiclePlate()
 		}
 
 		if vehiclePlate != "" {

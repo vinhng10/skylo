@@ -22,6 +22,9 @@ async def send(invoice: Invoice) -> Invoice:
     with open("./invoice.csv", "a") as f:
         duration = invoice.exit_date_time - invoice.entry_date_time
         f.write(
-            f"{invoice.vehicle_plate},{invoice.entry_date_time},{invoice.exit_date_time},{duration}\n"
+            f"{invoice.vehicle_plate},"
+            f"{invoice.entry_date_time},"
+            f"{invoice.exit_date_time},"
+            f"{duration}\n"
         )
     return invoice
