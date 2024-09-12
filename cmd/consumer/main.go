@@ -97,6 +97,84 @@ func sendInvoice(invoice Invoice) (*http.Response, error) {
 	return resp, nil
 }
 
+func processEntry(msgs <-chan amqp.Delivery, rdb *redis.Client) {
+	for msg := range msgs {
+		var event Event
+		err := json.Unmarshal(msg.Body, &event)
+		if err != nil {
+			log.Printf("Failed to unmarshal exit event: %v", err)
+			continue
+		}
+
+		err = func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err = rdb.Set(ctx, event.VehiclePlate, event.DateTime, 0).Result()
+			return err
+		}()
+		if err != nil {
+			log.Printf("Failed to set event to redis: %v", err)
+			continue
+		}
+
+		log.Printf("Entry %s", event.VehiclePlate)
+		msg.Ack(false)
+	}
+}
+
+func processExit(msgs <-chan amqp.Delivery, rdb *redis.Client) {
+	for msg := range msgs {
+		var event Event
+		err := json.Unmarshal(msg.Body, &event)
+		if err != nil {
+			log.Printf("Failed to unmarshal exit event: %v", err)
+			continue
+		}
+
+		val, err := func() (string, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			val, err := rdb.Get(ctx, event.VehiclePlate).Result()
+			return val, err
+		}()
+		if err != nil {
+			log.Printf("Failed to get event from redis: %v", err)
+			continue
+		}
+
+		entryDateTime, err := time.Parse(time.RFC3339, val)
+		if err != nil {
+			log.Printf("Failed to parse time: %v", err)
+			continue
+		}
+
+		_, err = sendInvoice(Invoice{
+			VehiclePlate:  event.VehiclePlate,
+			EntryDateTime: entryDateTime,
+			ExitDateTime:  event.DateTime,
+		})
+		if err != nil {
+			log.Printf("Failed to send invoice: %v", err)
+			continue
+		}
+
+		err = func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := rdb.Del(ctx, event.VehiclePlate).Result()
+			return err
+		}()
+		if err != nil {
+			log.Printf("Failed to remove event from redis: %v", err)
+			continue
+		}
+
+		log.Printf("Exit %s", event.VehiclePlate)
+		msg.Ack(false)
+	}
+}
+
 func main() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     "172.17.0.4:6379",
@@ -127,82 +205,11 @@ func main() {
 	entryMsgs, err := declareAndConsumeQueue(ch, "entry", "vehicle")
 	failOnError(err, "Failed to register entry consumer")
 
-	go func() {
-		for msg := range entryMsgs {
-			func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-
-				var event Event
-				err := json.Unmarshal(msg.Body, &event)
-				if err != nil {
-					log.Println("Failed to unmarshal exit event")
-					return
-				}
-
-				_, err = rdb.Set(ctx, event.VehiclePlate, event.DateTime, 0).Result()
-				if err != nil {
-					log.Println("Failed to set event to redis", err)
-					return
-				}
-
-				log.Print("Entry OK")
-				msg.Ack(false)
-			}()
-		}
-	}()
-
 	exitMsgs, err := declareAndConsumeQueue(ch, "exit", "vehicle")
 	failOnError(err, "Failed to register exit consumer")
 
-	go func() {
-		for msg := range exitMsgs {
-			func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-
-				var event Event
-				err := json.Unmarshal(msg.Body, &event)
-				if err != nil {
-					log.Println("Failed to unmarshal exit event")
-					return
-				}
-
-				val, err := rdb.Get(ctx, event.VehiclePlate).Result()
-				if err != nil {
-					log.Println("Failed to get event from redis", err)
-					return
-				}
-
-				entryDateTime, err := time.Parse(time.RFC3339, val)
-				if err != nil {
-					log.Println("Failed to parse time:", err)
-					return
-				}
-
-				_, err = sendInvoice(Invoice{
-					VehiclePlate:  event.VehiclePlate,
-					EntryDateTime: entryDateTime,
-					ExitDateTime:  event.DateTime,
-				})
-				if err != nil {
-					log.Println("Failed to send invoice:", err)
-					return
-				}
-
-				_, err = rdb.Del(ctx, event.VehiclePlate).Result()
-				if err != nil {
-					log.Println("Failed to remove event from redis", err)
-					return
-				}
-
-				log.Print("Exit OK")
-				msg.Ack(false)
-			}()
-		}
-	}()
-
-	log.Printf("Waiting for logs. To exit press CTRL+C")
+	go processEntry(entryMsgs, rdb)
+	go processExit(exitMsgs, rdb)
 
 	// Keep the main function running to receive messages
 	select {}
