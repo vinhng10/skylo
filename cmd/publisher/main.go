@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -14,7 +13,10 @@ import (
 )
 
 type Event struct {
-	VehiclePlate string `json:"vehicle_plate"`
+	ID           string    `json:"id"`
+	VehiclePlate string    `json:"vehicle_plate"`
+	Stage        string    `json:"stage"`
+	DateTime     time.Time `json:"date_time"`
 }
 
 func failOnError(err error, msg string) {
@@ -75,14 +77,11 @@ func postEvent(c *gin.Context, ch *amqp.Channel, qName string) {
 	if err := c.BindJSON(&newEvent); err != nil {
 		return
 	}
-	datetimeKey := fmt.Sprintf("%s_date_time", qName)
-	timedEvent := gin.H{
-		"id":            uuid.NewString(),
-		"vehicle_plate": newEvent.VehiclePlate,
-		datetimeKey:     time.Now().Unix(),
-	}
+	newEvent.ID = uuid.NewString()
+	newEvent.Stage = qName
+	newEvent.DateTime = time.Now().UTC()
 
-	body, _ := json.Marshal(timedEvent)
+	body, _ := json.Marshal(newEvent)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -102,5 +101,5 @@ func postEvent(c *gin.Context, ch *amqp.Channel, qName string) {
 		return
 	}
 
-	c.IndentedJSON(http.StatusCreated, timedEvent)
+	c.IndentedJSON(http.StatusCreated, newEvent)
 }
