@@ -3,8 +3,9 @@ from datetime import datetime
 from fastapi import FastAPI, status
 from pydantic import BaseModel
 
-if not Path("./invoice.csv").exists():
-    with open("./invoice.csv", "a") as f:
+data_path = Path("/app/data/invoice.csv")
+if not data_path.exists():
+    with open(data_path, "a") as f:
         f.write(f"VehiclePlate,EntryDateTime,ExitDateTime,Duration\n")
 
 
@@ -19,7 +20,7 @@ app = FastAPI()
 
 @app.post("/", status_code=status.HTTP_200_OK)
 async def send(invoice: Invoice) -> Invoice:
-    with open("./invoice.csv", "a") as f:
+    with open(data_path, "a") as f:
         duration = invoice.exit_date_time - invoice.entry_date_time
         f.write(
             f"{invoice.vehicle_plate},"

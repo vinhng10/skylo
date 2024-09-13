@@ -158,13 +158,14 @@ func generateExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
 
 func main() {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     "172.17.0.4:6379",
+		Addr:     "redis:6379",
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
 	defer rdb.Close()
 
-	conn, err := amqp.Dial("amqp://guest:guest@172.17.0.3:5672/")
+	time.Sleep(time.Duration(30) * time.Second)
+	conn, err := amqp.Dial("amqp://guest:guest@rabbitmq:5672/")
 	failOnError(err, "Failed to connect to RabbitMQ")
 	defer conn.Close()
 

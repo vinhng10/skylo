@@ -76,7 +76,7 @@ func declareAndConsumeQueue(ch *amqp.Channel, qName string, exName string) (<-ch
 }
 
 func sendInvoice(invoice Invoice) (*http.Response, error) {
-	url := "http://172.17.0.2:8000/"
+	url := "http://invoice:8000/"
 
 	body, err := json.Marshal(invoice)
 	if err != nil {
@@ -177,13 +177,14 @@ func processExit(msgs <-chan amqp.Delivery, rdb *redis.Client) {
 
 func main() {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     "172.17.0.4:6379",
+		Addr:     "redis:6379",
 		Password: "", // no password set
 		DB:       1,  // use default DB
 	})
 	defer rdb.Close()
 
-	conn, err := amqp.Dial("amqp://guest:guest@172.17.0.3:5672/")
+	time.Sleep(time.Duration(30) * time.Second)
+	conn, err := amqp.Dial("amqp://guest:guest@rabbitmq:5672/")
 	failOnError(err, "Failed to connect to RabbitMQ")
 	defer conn.Close()
 

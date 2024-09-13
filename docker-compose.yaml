@@ -1,0 +1,45 @@
+services:
+  producer:
+    image: producer
+    build:
+      context: ./cmd/producer
+    container_name: producer
+    depends_on:
+      - rabbitmq
+      - redis
+
+  consumer:
+    image: consumer
+    build:
+      context: ./cmd/consumer
+    container_name: consumer
+    depends_on:
+      - rabbitmq
+      - redis
+
+  invoice:
+    image: invoice
+    build:
+      context: ./cmd/invoice
+    container_name: invoice
+    ports:
+      - "8000:8000"
+    volumes:
+      - "D:/Workspace:/app/data"
+    depends_on:
+      - rabbitmq
+      - redis
+
+  rabbitmq:
+    image: rabbitmq:management-alpine
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  redis:
+    image: redis/redis-stack:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+      - "8001:8001"
