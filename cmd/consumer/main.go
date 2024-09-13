@@ -10,6 +10,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/push"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 )
@@ -30,6 +32,26 @@ type Invoice struct {
 func failOnError(err error, msg string) {
 	if err != nil {
 		log.Panicf("%s: %s", msg, err)
+	}
+}
+
+func timer(job string, histogram prometheus.Histogram) func() {
+	start := time.Now()
+
+	return func() {
+		// Measure the elapsed time and observe it in the histogram
+		histogram.Observe(time.Since(start).Seconds())
+
+		// Push the histogram data to the Prometheus Pushgateway
+		if err := push.New(fmt.Sprintf(
+			"http://%s:%s",
+			os.Getenv("PUSHGATEWAY_HOST"),
+			os.Getenv("PUSHGATEWAY_PORT"),
+		), job).
+			Collector(histogram).
+			Push(); err != nil {
+			log.Printf("Could not push to Pushgateway: %v", err)
+		}
 	}
 }
 
@@ -98,81 +120,103 @@ func sendInvoice(invoice Invoice) (*http.Response, error) {
 	return resp, nil
 }
 
-func processEntry(msgs <-chan amqp.Delivery, rdb *redis.Client) {
+func consumeEntry(msgs <-chan amqp.Delivery, rdb *redis.Client) {
+	// Create a Prometheus Histogram to track the duration
+	duration := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "consume_entry",
+		Help: "Time taken to consume vehicle entry",
+	})
+
 	for msg := range msgs {
-		var event Event
-		err := json.Unmarshal(msg.Body, &event)
-		if err != nil {
-			log.Printf("Failed to unmarshal exit event: %v", err)
-			continue
-		}
+		func() {
+			// Push time metric to Prometheus PushGateway
+			defer timer("consume_entry", duration)()
 
-		err = func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, err = rdb.Set(ctx, event.VehiclePlate, event.DateTime, 0).Result()
-			return err
+			var event Event
+			err := json.Unmarshal(msg.Body, &event)
+			if err != nil {
+				log.Printf("Failed to unmarshal exit event: %v", err)
+				return
+			}
+
+			err = func() error {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, err = rdb.Set(ctx, event.VehiclePlate, event.DateTime, 0).Result()
+				return err
+			}()
+			if err != nil {
+				log.Printf("Failed to set event to redis: %v", err)
+				return
+			}
+
+			log.Printf("Entry %s", event.VehiclePlate)
+			msg.Ack(false)
 		}()
-		if err != nil {
-			log.Printf("Failed to set event to redis: %v", err)
-			continue
-		}
-
-		log.Printf("Entry %s", event.VehiclePlate)
-		msg.Ack(false)
 	}
 }
 
-func processExit(msgs <-chan amqp.Delivery, rdb *redis.Client) {
+func consumeExit(msgs <-chan amqp.Delivery, rdb *redis.Client) {
+	// Create a Prometheus Histogram to track the duration
+	duration := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "consume_exit",
+		Help: "Time taken to consume vehicle exit",
+	})
+
 	for msg := range msgs {
-		var event Event
-		err := json.Unmarshal(msg.Body, &event)
-		if err != nil {
-			log.Printf("Failed to unmarshal exit event: %v", err)
-			continue
-		}
+		func() {
+			// Push time metric to Prometheus PushGateway
+			defer timer("consume_exit", duration)()
 
-		val, err := func() (string, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			var event Event
+			err := json.Unmarshal(msg.Body, &event)
+			if err != nil {
+				log.Printf("Failed to unmarshal exit event: %v", err)
+				return
+			}
 
-			val, err := rdb.Get(ctx, event.VehiclePlate).Result()
-			return val, err
+			val, err := func() (string, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+
+				val, err := rdb.Get(ctx, event.VehiclePlate).Result()
+				return val, err
+			}()
+			if err != nil {
+				log.Printf("Failed to get event from redis: %v", err)
+				return
+			}
+
+			entryDateTime, err := time.Parse(time.RFC3339, val)
+			if err != nil {
+				log.Printf("Failed to parse time: %v", err)
+				return
+			}
+
+			_, err = sendInvoice(Invoice{
+				VehiclePlate:  event.VehiclePlate,
+				EntryDateTime: entryDateTime,
+				ExitDateTime:  event.DateTime,
+			})
+			if err != nil {
+				log.Printf("Failed to send invoice: %v", err)
+				return
+			}
+
+			err = func() error {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, err := rdb.Del(ctx, event.VehiclePlate).Result()
+				return err
+			}()
+			if err != nil {
+				log.Printf("Failed to remove event from redis: %v", err)
+				return
+			}
+
+			log.Printf("Exit %s", event.VehiclePlate)
+			msg.Ack(false)
 		}()
-		if err != nil {
-			log.Printf("Failed to get event from redis: %v", err)
-			continue
-		}
-
-		entryDateTime, err := time.Parse(time.RFC3339, val)
-		if err != nil {
-			log.Printf("Failed to parse time: %v", err)
-			continue
-		}
-
-		_, err = sendInvoice(Invoice{
-			VehiclePlate:  event.VehiclePlate,
-			EntryDateTime: entryDateTime,
-			ExitDateTime:  event.DateTime,
-		})
-		if err != nil {
-			log.Printf("Failed to send invoice: %v", err)
-			continue
-		}
-
-		err = func() error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_, err := rdb.Del(ctx, event.VehiclePlate).Result()
-			return err
-		}()
-		if err != nil {
-			log.Printf("Failed to remove event from redis: %v", err)
-			continue
-		}
-
-		log.Printf("Exit %s", event.VehiclePlate)
-		msg.Ack(false)
 	}
 }
 
@@ -218,8 +262,8 @@ func main() {
 	exitMsgs, err := declareAndConsumeQueue(ch, "exit", "vehicle")
 	failOnError(err, "Failed to register exit consumer")
 
-	go processEntry(entryMsgs, rdb)
-	go processExit(exitMsgs, rdb)
+	go consumeEntry(entryMsgs, rdb)
+	go consumeExit(exitMsgs, rdb)
 
 	// Keep the main function running to receive messages
 	select {}

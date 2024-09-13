@@ -31,6 +31,7 @@ func failOnError(err error, msg string) {
 
 func timer(job string, histogram prometheus.Histogram) func() {
 	start := time.Now()
+
 	return func() {
 		// Measure the elapsed time and observe it in the histogram
 		histogram.Observe(time.Since(start).Seconds())
@@ -99,7 +100,7 @@ func produceEntry(ch *amqp.Channel, rdb *redis.Client, qName string) {
 	for {
 		func() {
 			// Push time metric to Prometheus PushGateway
-			defer timer("produce_entry", duration)
+			defer timer("produce_entry", duration)()
 
 			vehiclePlate := generateRandomVehiclePlate()
 
@@ -151,7 +152,7 @@ func produceExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
 	for {
 		func() {
 			// Push time metric to Prometheus PushGateway
-			defer timer("produce_exit", duration)
+			defer timer("produce_exit", duration)()
 
 			var vehiclePlate string
 			var err error

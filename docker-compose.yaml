@@ -60,7 +60,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - "./prometheus.yml:/etc/prometheus/prometheus.yml"
+      - "D:/Workspace/skylo/prometheus.yml:/etc/prometheus/prometheus.yml"
 
   pushgateway:
     image: prom/pushgateway
