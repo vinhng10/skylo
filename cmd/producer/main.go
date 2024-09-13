@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +28,14 @@ func failOnError(err error, msg string) {
 	if err != nil {
 		log.Panicf("%s: %s", msg, err)
 	}
+}
+
+func wait() {
+	wait, err := strconv.ParseInt(os.Getenv("MAX_WAIT"), 10, 64)
+	if err != nil {
+		wait = 1000
+	}
+	time.Sleep(time.Duration(rand.Intn(int(wait))+1) * time.Millisecond)
 }
 
 func timer(job string, histogram prometheus.Histogram) func() {
@@ -137,8 +146,7 @@ func produceEntry(ch *amqp.Channel, rdb *redis.Client, qName string) {
 				log.Printf("Vehicle plate already exists: %s", vehiclePlate)
 			}
 		}()
-
-		time.Sleep(time.Duration(rand.Intn(10)+1) * time.Second)
+		wait()
 	}
 }
 
@@ -195,7 +203,7 @@ func produceExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
 			}
 		}()
 
-		time.Sleep(time.Duration(rand.Intn(10)+1) * time.Second)
+		wait()
 	}
 }
 
