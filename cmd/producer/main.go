@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -158,14 +159,22 @@ func generateExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
 
 func main() {
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     "redis:6379",
+		Addr: fmt.Sprintf(
+			"%s:%s",
+			os.Getenv("REDIS_HOST"),
+			os.Getenv("REDIS_PORT"),
+		),
 		Password: "", // no password set
 		DB:       0,  // use default DB
 	})
 	defer rdb.Close()
 
 	time.Sleep(time.Duration(30) * time.Second)
-	conn, err := amqp.Dial("amqp://guest:guest@rabbitmq:5672/")
+	conn, err := amqp.Dial(fmt.Sprintf(
+		"amqp://guest:guest@%s:%s/",
+		os.Getenv("RABBITMQ_HOST"),
+		os.Getenv("RABBITMQ_PORT"),
+	))
 	failOnError(err, "Failed to connect to RabbitMQ")
 	defer conn.Close()
 

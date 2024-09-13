@@ -4,6 +4,8 @@ services:
     build:
       context: ./cmd/producer
     container_name: producer
+    env_file:
+      - .env
     depends_on:
       - rabbitmq
       - redis
@@ -13,6 +15,8 @@ services:
     build:
       context: ./cmd/consumer
     container_name: consumer
+    env_file:
+      - .env
     depends_on:
       - rabbitmq
       - redis
@@ -25,7 +29,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - "D:/Workspace:/app/data"
+      - "D:/Workspace/data:/app/data"
     depends_on:
       - rabbitmq
       - redis
