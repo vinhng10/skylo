@@ -176,16 +176,6 @@ func produceExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
 				if err != nil {
 					return
 				}
-			} else {
-				vehiclePlate = generateRandomVehiclePlate()
-			}
-
-			if vehiclePlate != "" {
-				err = sendEvent(ch, vehiclePlate, qName)
-				if err != nil {
-					log.Printf("Failed to send event: %v\n", err)
-					return
-				}
 
 				err := func() error {
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -196,6 +186,16 @@ func produceExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
 				}()
 				if err != nil {
 					log.Printf("Failed to delete vehicle plate in redis: %v\n", err)
+					return
+				}
+			} else {
+				vehiclePlate = generateRandomVehiclePlate()
+			}
+
+			if vehiclePlate != "" {
+				err = sendEvent(ch, vehiclePlate, qName)
+				if err != nil {
+					log.Printf("Failed to send event: %v\n", err)
 					return
 				}
 			} else {

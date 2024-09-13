@@ -1,5 +1,15 @@
-# Use Case
+# Skylo Parking Assignment
 
+### Overall Architecture
+![](images/architecture.png)
+
+### Producer flow
+![](images/producer.png)
+
+### Consumer flow
+![](images/consumer.png)
+
+# Use Case
 Most of the shopping malls nowadays have automated parking metering. There are cameras that track the entry and exit of the vehicle, and provide a realtime summary of vehicle time spent in parking lot. This in turn is used to send parking invoices to the vehicle owner.
 
 
