@@ -1,4 +1,4 @@
-module publisher
+module github.com/skylo
 
 go 1.23.1
 
