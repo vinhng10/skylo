@@ -33,7 +33,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - "D:/Workspace/data:/app/data"
+      - "./data:/app/data"
     depends_on:
       - rabbitmq
       - redis
@@ -60,7 +60,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - "D:/Workspace/skylo/prometheus.yml:/etc/prometheus/prometheus.yml"
+      - "./prometheus.yml:/etc/prometheus/prometheus.yml"
 
   pushgateway:
     image: prom/pushgateway
