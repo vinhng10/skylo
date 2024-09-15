@@ -9,6 +9,10 @@
 ### Consumer flow
 ![](images/consumer.png)
 
+### Metrics
+![](images/latency.png)
+90% percentile of event processing latency (in millisecond)
+
 # Use Case
 Most of the shopping malls nowadays have automated parking metering. There are cameras that track the entry and exit of the vehicle, and provide a realtime summary of vehicle time spent in parking lot. This in turn is used to send parking invoices to the vehicle owner.
 
