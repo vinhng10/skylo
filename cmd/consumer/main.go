@@ -55,7 +55,24 @@ func timer(job string, histogram prometheus.Histogram) func() {
 	}
 }
 
-func declareAndConsumeQueue(ch *amqp.Channel, qName string, exName string) (<-chan amqp.Delivery, error) {
+func hammingDistance(str1, str2 string) (int, error) {
+	if len(str1) != len(str2) {
+		return 0, fmt.Errorf("strings must be of the same length")
+	}
+	distance := 0
+	for i := range str1 {
+		if str1[i] != str2[i] {
+			distance++
+		}
+	}
+	return distance, nil
+}
+
+func declareAndConsumeQueue(
+	ch *amqp.Channel,
+	qName string,
+	exName string,
+) (<-chan amqp.Delivery, error) {
 	// Declare the queue
 	q, err := ch.QueueDeclare(
 		qName, // name
@@ -96,6 +113,26 @@ func declareAndConsumeQueue(ch *amqp.Channel, qName string, exName string) (<-ch
 	}
 
 	return msgs, nil
+}
+
+func sendEvent(ch *amqp.Channel, event Event, qName string) error {
+	body, _ := json.Marshal(event)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := ch.PublishWithContext(ctx,
+		"vehicle", // exchange
+		qName,     // routing key
+		false,     // mandatory
+		false,     // immediate
+		amqp.Publishing{
+			DeliveryMode: amqp.Persistent,
+			ContentType:  "application/json",
+			Body:         body,
+		})
+
+	return err
 }
 
 func sendInvoice(invoice Invoice) (*http.Response, error) {
@@ -156,7 +193,7 @@ func consumeEntry(msgs <-chan amqp.Delivery, rdb *redis.Client) {
 	}
 }
 
-func consumeExit(msgs <-chan amqp.Delivery, rdb *redis.Client) {
+func consumeExit(msgs <-chan amqp.Delivery, rdb *redis.Client, ch *amqp.Channel) {
 	// Create a Prometheus Histogram to track the duration
 	duration := prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name: "consume_exit",
@@ -183,7 +220,16 @@ func consumeExit(msgs <-chan amqp.Delivery, rdb *redis.Client) {
 				return val, err
 			}()
 			if err != nil {
-				log.Printf("Failed to get event from redis: %v", err)
+				if err == redis.Nil {
+					event.Stage = "unrecognized"
+					err = sendEvent(ch, event, "unrecognized")
+					if err != nil {
+						log.Printf("Failed to send unrecognized event: %v\n", err)
+					}
+					msg.Ack(false)
+				} else {
+					log.Printf("Failed to get event from redis: %v", err)
+				}
 				return
 			}
 
@@ -215,6 +261,98 @@ func consumeExit(msgs <-chan amqp.Delivery, rdb *redis.Client) {
 			}
 
 			log.Printf("Exit %s", event.VehiclePlate)
+			msg.Ack(false)
+		}()
+	}
+}
+
+func consumeUnrecognized(msgs <-chan amqp.Delivery, rdb *redis.Client) {
+	// Create a Prometheus Histogram to track the duration
+	duration := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "consume_unrecognized",
+		Help: "Time taken to consume unrecognized vehicle",
+	})
+
+	for msg := range msgs {
+		func() {
+			// Push time metric to Prometheus PushGateway
+			defer timer("consume_unrecognized", duration)()
+
+			var event Event
+			err := json.Unmarshal(msg.Body, &event)
+			if err != nil {
+				log.Printf("Failed to unmarshal unrecognized event: %v", err)
+				return
+			}
+
+			// Scan all vehicle plates to find most similar with Hamming distance:
+			probablePlate, val, err := func() (string, string, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+
+				var cursor uint64 = 0
+				probablePlate := ""
+				minDistance := 8
+
+				for {
+					keys, cursor, err := rdb.Scan(ctx, cursor, "*", 100).Result()
+					if err != nil {
+						return "", "", err
+					}
+
+					for _, key := range keys {
+						distance, err := hammingDistance(event.VehiclePlate, key)
+						if err != nil {
+							return "", "", err
+						}
+
+						if distance < minDistance {
+							minDistance = distance
+							probablePlate = key
+						}
+					}
+
+					if cursor == 0 {
+						break
+					}
+				}
+
+				val, err := rdb.Get(ctx, probablePlate).Result()
+				return probablePlate, val, err
+			}()
+			if err != nil {
+				log.Printf("Failed to scan matching plate from redis: %v", err)
+				return
+			}
+
+			entryDateTime, err := time.Parse(time.RFC3339, val)
+			if err != nil {
+				log.Printf("Failed to parse time: %v", err)
+				return
+			}
+
+			_, err = sendInvoice(Invoice{
+				VehiclePlate:  probablePlate,
+				EntryDateTime: entryDateTime,
+				ExitDateTime:  event.DateTime,
+			})
+			if err != nil {
+				log.Printf("Failed to send invoice: %v", err)
+				return
+			}
+
+			err = func() error {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, err := rdb.Del(ctx, probablePlate).Result()
+				return err
+			}()
+			if err != nil {
+				log.Printf("Failed to remove event from redis: %v", err)
+				return
+			}
+
+			log.Printf("Unrecognized %s %s", event.VehiclePlate, probablePlate)
 			msg.Ack(false)
 		}()
 	}
@@ -262,8 +400,12 @@ func main() {
 	exitMsgs, err := declareAndConsumeQueue(ch, "exit", "vehicle")
 	failOnError(err, "Failed to register exit consumer")
 
+	unrecognizedMsgs, err := declareAndConsumeQueue(ch, "unrecognized", "vehicle")
+	failOnError(err, "Failed to register unrecognized consumer")
+
 	go consumeEntry(entryMsgs, rdb)
-	go consumeExit(exitMsgs, rdb)
+	go consumeExit(exitMsgs, rdb, ch)
+	go consumeUnrecognized(unrecognizedMsgs, rdb)
 
 	// Keep the main function running to receive messages
 	select {}
