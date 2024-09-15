@@ -100,7 +100,10 @@ func produceEntry(ch *amqp.Channel, rdb *redis.Client, qName string) {
 			} else {
 				log.Printf("Vehicle plate already exists: %s", vehiclePlate)
 			}
+
+			log.Printf("Entry %s", vehiclePlate)
 		}()
+
 		wait()
 	}
 }
@@ -159,6 +162,8 @@ func produceExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
 			} else {
 				log.Printf("No vehicle")
 			}
+
+			log.Printf("Exit %s", vehiclePlate)
 		}()
 
 		wait()
