@@ -1,4 +1,4 @@
-module github.com/skylo
+module github.com/vinhng10/skylo
 
 go 1.23.1
 
