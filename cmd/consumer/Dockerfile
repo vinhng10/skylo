@@ -11,10 +11,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy the rest of the application code
-COPY main.go .
+COPY . .
 
 # Build the Go app (use the appropriate build command for your app)
-RUN go build -o main .
+RUN go build -o main ./cmd/consumer
 
 # Step 2: Create a small image with only the built binary
 FROM alpine:latest

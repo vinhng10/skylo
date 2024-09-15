@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -10,25 +9,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/vinhng10/skylo/cmd/utils"
+
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/push"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 )
-
-type Event struct {
-	ID           string    `json:"id"`
-	VehiclePlate string    `json:"vehicle_plate"`
-	Stage        string    `json:"stage"`
-	DateTime     time.Time `json:"date_time"`
-}
-
-func failOnError(err error, msg string) {
-	if err != nil {
-		log.Panicf("%s: %s", msg, err)
-	}
-}
 
 func wait() {
 	wait, err := strconv.ParseInt(os.Getenv("MAX_WAIT"), 10, 64)
@@ -36,26 +23,6 @@ func wait() {
 		wait = 1000
 	}
 	time.Sleep(time.Duration(rand.Intn(int(wait))+1) * time.Millisecond)
-}
-
-func timer(job string, histogram prometheus.Histogram) func() {
-	start := time.Now()
-
-	return func() {
-		// Measure the elapsed time and observe it in the histogram
-		histogram.Observe(time.Since(start).Seconds())
-
-		// Push the histogram data to the Prometheus Pushgateway
-		if err := push.New(fmt.Sprintf(
-			"http://%s:%s",
-			os.Getenv("PUSHGATEWAY_HOST"),
-			os.Getenv("PUSHGATEWAY_PORT"),
-		), job).
-			Collector(histogram).
-			Push(); err != nil {
-			log.Printf("Could not push to Pushgateway: %v", err)
-		}
-	}
 }
 
 func generateRandomVehiclePlate(vehiclePlate string) string {
@@ -81,26 +48,6 @@ func generateRandomVehiclePlate(vehiclePlate string) string {
 	}
 }
 
-func sendEvent(ch *amqp.Channel, event Event, qName string) error {
-	body, _ := json.Marshal(event)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	err := ch.PublishWithContext(ctx,
-		"vehicle", // exchange
-		qName,     // routing key
-		false,     // mandatory
-		false,     // immediate
-		amqp.Publishing{
-			DeliveryMode: amqp.Persistent,
-			ContentType:  "application/json",
-			Body:         body,
-		})
-
-	return err
-}
-
 func produceEntry(ch *amqp.Channel, rdb *redis.Client, qName string) {
 	// Create a Prometheus Histogram to track the duration
 	duration := prometheus.NewHistogram(prometheus.HistogramOpts{
@@ -111,7 +58,7 @@ func produceEntry(ch *amqp.Channel, rdb *redis.Client, qName string) {
 	for {
 		func() {
 			// Push time metric to Prometheus PushGateway
-			defer timer("produce_entry", duration)()
+			defer utils.Timer("produce_entry", duration)()
 
 			vehiclePlate := generateRandomVehiclePlate("")
 
@@ -139,13 +86,13 @@ func produceEntry(ch *amqp.Channel, rdb *redis.Client, qName string) {
 					return
 				}
 
-				event := Event{
+				event := utils.Event{
 					ID:           uuid.NewString(),
 					VehiclePlate: vehiclePlate,
 					Stage:        qName,
 					DateTime:     time.Now().UTC(),
 				}
-				err = sendEvent(ch, event, qName)
+				err = utils.SendEvent(ch, event, qName)
 				if err != nil {
 					log.Printf("Failed to send event: %v\n", err)
 					return
@@ -168,7 +115,7 @@ func produceExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
 	for {
 		func() {
 			// Push time metric to Prometheus PushGateway
-			defer timer("produce_exit", duration)()
+			defer utils.Timer("produce_exit", duration)()
 
 			vehiclePlate, err := func() (string, error) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -198,13 +145,13 @@ func produceExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
 			}
 
 			if vehiclePlate != "" {
-				event := Event{
+				event := utils.Event{
 					ID:           uuid.NewString(),
 					VehiclePlate: vehiclePlate,
 					Stage:        qName,
 					DateTime:     time.Now().UTC(),
 				}
-				err = sendEvent(ch, event, qName)
+				err = utils.SendEvent(ch, event, qName)
 				if err != nil {
 					log.Printf("Failed to send event: %v\n", err)
 					return
@@ -236,11 +183,11 @@ func main() {
 		os.Getenv("RABBITMQ_HOST"),
 		os.Getenv("RABBITMQ_PORT"),
 	))
-	failOnError(err, "Failed to connect to RabbitMQ")
+	utils.FailOnError(err, "Failed to connect to RabbitMQ")
 	defer conn.Close()
 
 	ch, err := conn.Channel()
-	failOnError(err, "Failed to open a channel")
+	utils.FailOnError(err, "Failed to open a channel")
 	defer ch.Close()
 
 	err = ch.ExchangeDeclare(
@@ -252,7 +199,7 @@ func main() {
 		false,     // no-wait
 		nil,       // arguments
 	)
-	failOnError(err, "Failed to declare an exchange")
+	utils.FailOnError(err, "Failed to declare an exchange")
 
 	entryQ, err := ch.QueueDeclare(
 		"entry", // name
@@ -262,7 +209,7 @@ func main() {
 		false,   // no-wait
 		nil,     // arguments
 	)
-	failOnError(err, "Failed to declare entry queue")
+	utils.FailOnError(err, "Failed to declare entry queue")
 
 	exitQ, err := ch.QueueDeclare(
 		"exit", // name
@@ -272,7 +219,7 @@ func main() {
 		false,  // no-wait
 		nil,    // arguments
 	)
-	failOnError(err, "Failed to declare exit queue")
+	utils.FailOnError(err, "Failed to declare exit queue")
 
 	go produceEntry(ch, rdb, entryQ.Name)
 	go produceExit(ch, rdb, exitQ.Name)

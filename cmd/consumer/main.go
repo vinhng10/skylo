@@ -10,49 +10,17 @@ import (
 	"os"
 	"time"
 
+	"github.com/vinhng10/skylo/cmd/utils"
+
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/push"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 )
-
-type Event struct {
-	ID           string    `json:"id"`
-	VehiclePlate string    `json:"vehicle_plate"`
-	Stage        string    `json:"stage"`
-	DateTime     time.Time `json:"date_time"`
-}
 
 type Invoice struct {
 	VehiclePlate  string    `json:"vehicle_plate"`
 	EntryDateTime time.Time `json:"entry_date_time"`
 	ExitDateTime  time.Time `json:"exit_date_time"`
-}
-
-func failOnError(err error, msg string) {
-	if err != nil {
-		log.Panicf("%s: %s", msg, err)
-	}
-}
-
-func timer(job string, histogram prometheus.Histogram) func() {
-	start := time.Now()
-
-	return func() {
-		// Measure the elapsed time and observe it in the histogram
-		histogram.Observe(time.Since(start).Seconds())
-
-		// Push the histogram data to the Prometheus Pushgateway
-		if err := push.New(fmt.Sprintf(
-			"http://%s:%s",
-			os.Getenv("PUSHGATEWAY_HOST"),
-			os.Getenv("PUSHGATEWAY_PORT"),
-		), job).
-			Collector(histogram).
-			Push(); err != nil {
-			log.Printf("Could not push to Pushgateway: %v", err)
-		}
-	}
 }
 
 func hammingDistance(str1, str2 string) (int, error) {
@@ -115,26 +83,6 @@ func declareAndConsumeQueue(
 	return msgs, nil
 }
 
-func sendEvent(ch *amqp.Channel, event Event, qName string) error {
-	body, _ := json.Marshal(event)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	err := ch.PublishWithContext(ctx,
-		"vehicle", // exchange
-		qName,     // routing key
-		false,     // mandatory
-		false,     // immediate
-		amqp.Publishing{
-			DeliveryMode: amqp.Persistent,
-			ContentType:  "application/json",
-			Body:         body,
-		})
-
-	return err
-}
-
 func sendInvoice(invoice Invoice) (*http.Response, error) {
 	url := fmt.Sprintf("http://%s:%s/", os.Getenv("INVOICE_HOST"), os.Getenv("INVOICE_PORT"))
 
@@ -167,9 +115,9 @@ func consumeEntry(msgs <-chan amqp.Delivery, rdb *redis.Client) {
 	for msg := range msgs {
 		func() {
 			// Push time metric to Prometheus PushGateway
-			defer timer("consume_entry", duration)()
+			defer utils.Timer("consume_entry", duration)()
 
-			var event Event
+			var event utils.Event
 			err := json.Unmarshal(msg.Body, &event)
 			if err != nil {
 				log.Printf("Failed to unmarshal exit event: %v", err)
@@ -203,9 +151,9 @@ func consumeExit(msgs <-chan amqp.Delivery, rdb *redis.Client, ch *amqp.Channel)
 	for msg := range msgs {
 		func() {
 			// Push time metric to Prometheus PushGateway
-			defer timer("consume_exit", duration)()
+			defer utils.Timer("consume_exit", duration)()
 
-			var event Event
+			var event utils.Event
 			err := json.Unmarshal(msg.Body, &event)
 			if err != nil {
 				log.Printf("Failed to unmarshal exit event: %v", err)
@@ -222,7 +170,7 @@ func consumeExit(msgs <-chan amqp.Delivery, rdb *redis.Client, ch *amqp.Channel)
 			if err != nil {
 				if err == redis.Nil {
 					event.Stage = "unrecognized"
-					err = sendEvent(ch, event, "unrecognized")
+					err = utils.SendEvent(ch, event, "unrecognized")
 					if err != nil {
 						log.Printf("Failed to send unrecognized event: %v\n", err)
 					}
@@ -276,9 +224,9 @@ func consumeUnrecognized(msgs <-chan amqp.Delivery, rdb *redis.Client) {
 	for msg := range msgs {
 		func() {
 			// Push time metric to Prometheus PushGateway
-			defer timer("consume_unrecognized", duration)()
+			defer utils.Timer("consume_unrecognized", duration)()
 
-			var event Event
+			var event utils.Event
 			err := json.Unmarshal(msg.Body, &event)
 			if err != nil {
 				log.Printf("Failed to unmarshal unrecognized event: %v", err)
@@ -376,11 +324,11 @@ func main() {
 		os.Getenv("RABBITMQ_HOST"),
 		os.Getenv("RABBITMQ_PORT"),
 	))
-	failOnError(err, "Failed to connect to RabbitMQ")
+	utils.FailOnError(err, "Failed to connect to RabbitMQ")
 	defer conn.Close()
 
 	ch, err := conn.Channel()
-	failOnError(err, "Failed to open a channel")
+	utils.FailOnError(err, "Failed to open a channel")
 	defer ch.Close()
 
 	err = ch.ExchangeDeclare(
@@ -392,16 +340,16 @@ func main() {
 		false,     // no-wait
 		nil,       // arguments
 	)
-	failOnError(err, "Failed to declare an exchange")
+	utils.FailOnError(err, "Failed to declare an exchange")
 
 	entryMsgs, err := declareAndConsumeQueue(ch, "entry", "vehicle")
-	failOnError(err, "Failed to register entry consumer")
+	utils.FailOnError(err, "Failed to register entry consumer")
 
 	exitMsgs, err := declareAndConsumeQueue(ch, "exit", "vehicle")
-	failOnError(err, "Failed to register exit consumer")
+	utils.FailOnError(err, "Failed to register exit consumer")
 
 	unrecognizedMsgs, err := declareAndConsumeQueue(ch, "unrecognized", "vehicle")
-	failOnError(err, "Failed to register unrecognized consumer")
+	utils.FailOnError(err, "Failed to register unrecognized consumer")
 
 	go consumeEntry(entryMsgs, rdb)
 	go consumeExit(exitMsgs, rdb, ch)
