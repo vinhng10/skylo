@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
 	"strconv"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 )
@@ -48,17 +50,10 @@ func generateRandomVehiclePlate(vehiclePlate string) string {
 	}
 }
 
-func produceEntry(ch *amqp.Channel, rdb *redis.Client, qName string) {
-	// Create a Prometheus Histogram to track the duration
-	duration := prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name: "produce_entry",
-		Help: "Time taken to produce vehicle entry",
-	})
-
+func produceEntry(ch *amqp.Channel, rdb *redis.Client, metrics *prometheus.HistogramVec) {
 	for {
 		func() {
-			// Push time metric to Prometheus PushGateway
-			defer utils.Timer("produce_entry", duration)()
+			defer utils.Timer("produce_entry", metrics)()
 
 			vehiclePlate := generateRandomVehiclePlate("")
 
@@ -89,10 +84,10 @@ func produceEntry(ch *amqp.Channel, rdb *redis.Client, qName string) {
 				event := utils.Event{
 					ID:           uuid.NewString(),
 					VehiclePlate: vehiclePlate,
-					Stage:        qName,
+					Stage:        "entry",
 					DateTime:     time.Now().UTC(),
 				}
-				err = utils.SendEvent(ch, event, qName)
+				err = utils.SendEvent(ch, event, "entry")
 				if err != nil {
 					log.Printf("Failed to send event: %v\n", err)
 					return
@@ -108,17 +103,10 @@ func produceEntry(ch *amqp.Channel, rdb *redis.Client, qName string) {
 	}
 }
 
-func produceExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
-	// Create a Prometheus Histogram to track the duration
-	duration := prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name: "produce_exit",
-		Help: "Time taken to produce vehicle exit",
-	})
-
+func produceExit(ch *amqp.Channel, rdb *redis.Client, metrics *prometheus.HistogramVec) {
 	for {
 		func() {
-			// Push time metric to Prometheus PushGateway
-			defer utils.Timer("produce_exit", duration)()
+			defer utils.Timer("produce_exit", metrics)()
 
 			vehiclePlate, err := func() (string, error) {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -151,10 +139,10 @@ func produceExit(ch *amqp.Channel, rdb *redis.Client, qName string) {
 				event := utils.Event{
 					ID:           uuid.NewString(),
 					VehiclePlate: vehiclePlate,
-					Stage:        qName,
+					Stage:        "exit",
 					DateTime:     time.Now().UTC(),
 				}
-				err = utils.SendEvent(ch, event, qName)
+				err = utils.SendEvent(ch, event, "exit")
 				if err != nil {
 					log.Printf("Failed to send event: %v\n", err)
 					return
@@ -182,7 +170,7 @@ func main() {
 	})
 	defer rdb.Close()
 
-	time.Sleep(time.Duration(30) * time.Second)
+	time.Sleep(time.Duration(20) * time.Second)
 	conn, err := amqp.Dial(fmt.Sprintf(
 		"amqp://guest:guest@%s:%s/",
 		os.Getenv("RABBITMQ_HOST"),
@@ -206,7 +194,7 @@ func main() {
 	)
 	utils.FailOnError(err, "Failed to declare an exchange")
 
-	entryQ, err := ch.QueueDeclare(
+	_, err = ch.QueueDeclare(
 		"entry", // name
 		true,    // durable
 		false,   // delete when unused
@@ -216,7 +204,7 @@ func main() {
 	)
 	utils.FailOnError(err, "Failed to declare entry queue")
 
-	exitQ, err := ch.QueueDeclare(
+	_, err = ch.QueueDeclare(
 		"exit", // name
 		true,   // durable
 		false,  // delete when unused
@@ -226,8 +214,26 @@ func main() {
 	)
 	utils.FailOnError(err, "Failed to declare exit queue")
 
-	go produceEntry(ch, rdb, entryQ.Name)
-	go produceExit(ch, rdb, exitQ.Name)
+	// Create and register a Prometheus Histogram to track the duration
+	metrics := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "latency",
+		Help:    "Event processing latency (millisecond)",
+		Buckets: prometheus.LinearBuckets(1, 1, 5),
+	}, []string{"stage"})
+	prometheus.MustRegister(metrics)
+
+	// Serve metrics over HTTP in a separate goroutine
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		log.Fatalln(http.ListenAndServe(
+			fmt.Sprintf(":%s", os.Getenv("PRODUCER_PORT")),
+			nil,
+		))
+	}()
+
+	// Produce event in a separate goroutine
+	go produceEntry(ch, rdb, metrics)
+	go produceExit(ch, rdb, metrics)
 
 	// Keep the main function running to receive messages
 	select {}

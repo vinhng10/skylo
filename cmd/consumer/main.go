@@ -13,6 +13,7 @@ import (
 	"github.com/vinhng10/skylo/cmd/utils"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 )
@@ -105,17 +106,10 @@ func sendInvoice(invoice Invoice) (*http.Response, error) {
 	return resp, nil
 }
 
-func consumeEntry(msgs <-chan amqp.Delivery, rdb *redis.Client) {
-	// Create a Prometheus Histogram to track the duration
-	duration := prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name: "consume_entry",
-		Help: "Time taken to consume vehicle entry",
-	})
-
+func consumeEntry(msgs <-chan amqp.Delivery, rdb *redis.Client, metrics *prometheus.HistogramVec) {
 	for msg := range msgs {
 		func() {
-			// Push time metric to Prometheus PushGateway
-			defer utils.Timer("consume_entry", duration)()
+			defer utils.Timer("consume_entry", metrics)()
 
 			var event utils.Event
 			err := json.Unmarshal(msg.Body, &event)
@@ -141,17 +135,10 @@ func consumeEntry(msgs <-chan amqp.Delivery, rdb *redis.Client) {
 	}
 }
 
-func consumeExit(msgs <-chan amqp.Delivery, rdb *redis.Client, ch *amqp.Channel) {
-	// Create a Prometheus Histogram to track the duration
-	duration := prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name: "consume_exit",
-		Help: "Time taken to consume vehicle exit",
-	})
-
+func consumeExit(msgs <-chan amqp.Delivery, rdb *redis.Client, ch *amqp.Channel, metrics *prometheus.HistogramVec) {
 	for msg := range msgs {
 		func() {
-			// Push time metric to Prometheus PushGateway
-			defer utils.Timer("consume_exit", duration)()
+			defer utils.Timer("consume_exit", metrics)()
 
 			var event utils.Event
 			err := json.Unmarshal(msg.Body, &event)
@@ -214,17 +201,10 @@ func consumeExit(msgs <-chan amqp.Delivery, rdb *redis.Client, ch *amqp.Channel)
 	}
 }
 
-func consumeUnrecognized(msgs <-chan amqp.Delivery, rdb *redis.Client) {
-	// Create a Prometheus Histogram to track the duration
-	duration := prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name: "consume_unrecognized",
-		Help: "Time taken to consume unrecognized vehicle",
-	})
-
+func consumeUnrecognized(msgs <-chan amqp.Delivery, rdb *redis.Client, metrics *prometheus.HistogramVec) {
 	for msg := range msgs {
 		func() {
-			// Push time metric to Prometheus PushGateway
-			defer utils.Timer("consume_unrecognized", duration)()
+			defer utils.Timer("consume_unrecognized", metrics)()
 
 			var event utils.Event
 			err := json.Unmarshal(msg.Body, &event)
@@ -318,7 +298,7 @@ func main() {
 	})
 	defer rdb.Close()
 
-	time.Sleep(time.Duration(30) * time.Second)
+	time.Sleep(time.Duration(20) * time.Second)
 	conn, err := amqp.Dial(fmt.Sprintf(
 		"amqp://guest:guest@%s:%s/",
 		os.Getenv("RABBITMQ_HOST"),
@@ -351,9 +331,27 @@ func main() {
 	unrecognizedMsgs, err := declareAndConsumeQueue(ch, "unrecognized", "vehicle")
 	utils.FailOnError(err, "Failed to register unrecognized consumer")
 
-	go consumeEntry(entryMsgs, rdb)
-	go consumeExit(exitMsgs, rdb, ch)
-	go consumeUnrecognized(unrecognizedMsgs, rdb)
+	// Create and register a Prometheus Histogram to track the duration
+	metrics := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "latency",
+		Help:    "Event processing latency (millisecond)",
+		Buckets: prometheus.LinearBuckets(1, 1, 5),
+	}, []string{"stage"})
+	prometheus.MustRegister(metrics)
+
+	// Serve metrics over HTTP in a separate goroutine
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		log.Fatalln(http.ListenAndServe(
+			fmt.Sprintf(":%s", os.Getenv("CONSUMER_PORT")),
+			nil,
+		))
+	}()
+
+	// Consume event in a separate goroutine
+	go consumeEntry(entryMsgs, rdb, metrics)
+	go consumeExit(exitMsgs, rdb, ch, metrics)
+	go consumeUnrecognized(unrecognizedMsgs, rdb, metrics)
 
 	// Keep the main function running to receive messages
 	select {}

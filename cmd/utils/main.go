@@ -3,13 +3,10 @@ package utils
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/push"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -26,23 +23,12 @@ func FailOnError(err error, msg string) {
 	}
 }
 
-func Timer(job string, histogram prometheus.Histogram) func() {
+func Timer(stage string, histogram *prometheus.HistogramVec) func() {
 	start := time.Now()
 
 	return func() {
 		// Measure the elapsed time and observe it in the histogram
-		histogram.Observe(time.Since(start).Seconds())
-
-		// Push the histogram data to the Prometheus Pushgateway
-		if err := push.New(fmt.Sprintf(
-			"http://%s:%s",
-			os.Getenv("PUSHGATEWAY_HOST"),
-			os.Getenv("PUSHGATEWAY_PORT"),
-		), job).
-			Collector(histogram).
-			Push(); err != nil {
-			log.Printf("Could not push to Pushgateway: %v", err)
-		}
+		histogram.WithLabelValues(stage).Observe(float64(time.Since(start).Milliseconds()))
 	}
 }
 
