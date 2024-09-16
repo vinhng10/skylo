@@ -1,7 +1,7 @@
 # Skylo Parking Assignment
 
 ### Overall Architecture
-![](images/architecture.png)
+![](images/architecture2.png)
 
 ### Producer flow
 ![](images/producer.png)
